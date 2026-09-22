@@ -1,0 +1,10 @@
+# 核心依赖 (部署最小集: numpy + onnxruntime)
+numpy>=1.22
+onnxruntime>=1.16
+# 训练 / 仿真 / 导出
+torch>=2.0
+onnx>=1.15
+onnxscript>=0.1
+scipy>=1.8
+# 实验绘图 (可选)
+matplotlib>=3.6
