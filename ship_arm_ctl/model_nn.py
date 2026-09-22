@@ -14,7 +14,13 @@
 * 仅用全连接 + LayerNorm + ReLU, 体积小、推理快 (CPU 上 < 0.1 ms)。
 * 归一化均值/标准差作为 buffer 烘焙进模型, 因此导出的 ONNX 直接吃"原始特征"
   输出"原始力矩", 部署端无需自己维护归一化。
+* **输入钳位** ``clamp_x`` 同样烘焙进 ONNX: 归一化后的特征被夹到 ±clamp_x。
+  这一层很关键 —— 若部署时状态超出训练分布 (例如定点保持任务里 TSID 为抵抗
+  基座冲击而给出 |q̈*| ≈ 130 rad/s², 超过训练采样域), 没有钳位的 MLP 会外推
+  并使 tanh 饱和到满量程, 反而把系统打飞。钳位后, 分布外最多退化成"边界上的
+  合理估计", 不会爆掉。
 * 输出经 tanh 限幅到 ±out_scale, 保证即便网络失准, 补偿量也不会破坏 QP 力矩限。
+  out_scale 由训练数据统计给出 (训练脚本按残差分位数设定), 而不是拍脑袋常量。
 """
 
 from __future__ import annotations
@@ -29,10 +35,13 @@ class ResidualNet(nn.Module):
     IN_DIM = 40
     OUT_DIM = 7
 
-    def __init__(self, hidden: int = 128, out_scale: float = 40.0):
+    def __init__(self, hidden: int = 128, out_scale: float = 40.0,
+                 clamp_x: float = 4.0):
         super().__init__()
         self.hidden = hidden
         self.out_scale = float(out_scale)
+        # 归一化后特征的钳位界 (以标准差为单位); 烘焙进 ONNX, 防止分布外外推爆掉
+        self.clamp_x = float(clamp_x)
         # 烘焙进模型的归一化统计量 (导出 ONNX 后依旧生效)
         self.register_buffer("input_mean", torch.zeros(self.IN_DIM))
         self.register_buffer("input_std", torch.ones(self.IN_DIM))
@@ -57,4 +66,6 @@ class ResidualNet(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         xn = (x - self.input_mean) / self.input_std
+        # 钳位: 分布外输入被压到边界, 输出保持有界 (同时烘焙进 ONNX)
+        xn = torch.clamp(xn, -self.clamp_x, self.clamp_x)
         return self.out_scale * self.net(xn)

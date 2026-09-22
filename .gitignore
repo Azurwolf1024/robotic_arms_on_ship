@@ -8,7 +8,9 @@ __pycache__/
 models/_smoke.onnx
 models/_smoke.onnx.data
 models/_train.txt
-models/train_data.npz
+models/smoke.*
+models/train_data*.npz
+models/_bak_v2/
 output/
 *.pkl
 

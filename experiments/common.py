@@ -21,6 +21,8 @@ from ship_arm.estimation.eskf import ESKFConfig                   # noqa: E402
 from ship_arm.platform.ship import ShipMotion                     # noqa: E402
 from ship_arm.robot.model import Robot                            # noqa: E402
 from ship_arm.robot.panda import PANDA_HOME, make_panda, perturb_spec  # noqa: E402
+from ship_arm.robot.nero import NERO_HOME, make_nero              # noqa: E402
+from ship_arm_ctl.config import build_robot as _build_robot       # noqa: E402
 from ship_arm.sim.engine import (                                 # noqa: E402
     SimOptions, Simulator, estimation_metrics, tracking_metrics,
 )
@@ -38,11 +40,19 @@ METHOD_LABEL = {
 MISMATCH = dict(model_error=0.12, friction=0.15, coulomb=0.3)
 
 
-def build_robot(payload: float = 0.0, model_error: float = 0.0, seed: int = 7) -> Robot:
-    spec = make_panda(tool_mass=0.73, payload_mass=payload)
+def build_robot(kind: str = "panda", tool_mass: float = None, payload: float = 0.0,
+                model_error: float = 0.0, seed: int = 7, tau_max=None, dq_max=None) -> Robot:
+    """构造被控对象/名义模型; kind='panda'|'nero'。"""
+    robot = _build_robot(kind, tool_mass=tool_mass, payload_mass=payload,
+                         tau_max=tau_max, dq_max=dq_max)
     if model_error > 0.0:
-        spec = perturb_spec(spec, rel_mass=model_error, rel_inertia=1.6 * model_error, seed=seed)
-    return Robot(spec)
+        robot = Robot(perturb_spec(robot.spec, rel_mass=model_error,
+                                   rel_inertia=1.6 * model_error, seed=seed))
+    return robot
+
+
+def home_for(kind: str = "panda") -> np.ndarray:
+    return NERO_HOME.copy() if kind == "nero" else PANDA_HOME.copy()
 
 
 def make_ship(scale: float = 1.0) -> ShipMotion:
@@ -59,15 +69,15 @@ def run_case(task: str, method: str, duration: float, ship: ShipMotion,
              admittance=None, force_noise: float = 0.0, log_every: int = 10,
              ship_scale: float = None, seed: int = 1, tau_scale: float = 1.0,
              task_kw: dict = None, ship_time_scale: float = None,
-             nn_comp=None, ladrc=None) -> dict:
+             nn_comp=None, ladrc=None, kind: str = "panda") -> dict:
     """跑一条实验; 返回 {'metrics':..., 'est':..., 'wall':..., 'log':(降采样数组)}。"""
     if ship_scale is not None or ship_time_scale is not None:
         ship = make_ship(ship_scale if ship_scale is not None else 1.0)
         ship.time_scale = ship_time_scale if ship_time_scale is not None else 1.0
-    robot_c = build_robot(0.0)
+    robot_c = build_robot(kind, payload=0.0)
     if tau_scale != 1.0:
         robot_c.tau_max = robot_c.tau_max * tau_scale
-    robot_t = build_robot(payload, model_error=model_error)
+    robot_t = build_robot(kind, payload=payload, model_error=model_error)
     task_obj = make_task(task, np.zeros(3), np.eye(3), **(task_kw or {}))
     task_obj.duration = duration
 
@@ -79,8 +89,12 @@ def run_case(task: str, method: str, duration: float, ship: ShipMotion,
                       admittance=admittance, force_noise=force_noise,
                       log_every=log_every, seed=seed,
                       nn_comp=nn_comp, ladrc=ladrc)
+    # 增益按机械臂构造: 零空间目标 q_ns 必须是该臂自己的 home 且落在限位内
+    if gains is None:
+        from ship_arm_ctl.config import build_gains
+        gains = build_gains(kind, robot_c)
     sim = Simulator(robot_c, robot_t, ship, task_obj, opts,
-                    q0=PANDA_HOME.copy() if q0 is None else q0,
+                    q0=home_for(kind).copy() if q0 is None else q0,
                     gains=gains, tsid_opts=tsid_opts)
     t0 = time.perf_counter()
     log = sim.run()

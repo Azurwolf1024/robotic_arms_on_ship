@@ -21,7 +21,8 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
-from .config import DEFAULT_GAINS, DEFAULT_ROBOT, DEFAULT_TSID_OPTS
+from .config import (DEFAULT_GAINS, DEFAULT_ROBOT, DEFAULT_TSID_OPTS,
+                     ROBOT_GATE, RobotGate)
 from .ladrc import LadrcCompensator
 from .nn_comp import ResidualCompensator
 
@@ -31,6 +32,16 @@ class ControllerConfig:
     use_nn: bool = True
     use_ladrc: bool = False
     nn_onnx: str = "models/residual_net.onnx"
+    nn_residual_frac: float = 0.25  # 残差补偿最多占力矩限的比例 (安全兜底)
+    # 门控阈值: 留 None 表示按机械臂种类取 config.ROBOT_GATE —— 那里才是指标唯一的
+    # 真相来源 (阈值全部由实测 ‖q̈*‖ / ‖a_w‖ 分布定出)。要手工覆盖就直接给数值。
+    robot_kind: str = "panda"
+    nn_trust_in: float | None = None
+    nn_trust_out: float | None = None
+    nn_sev_in: float | None = None
+    nn_sev_out: float | None = None
+    nn_sev_tau: float = 5.0     # 包络时间常数 (s); 实测 1s 太短, 5s 才贴住海况峰值
+    nn_qdd_clip: float = 4000.0  # 纯数值哨兵, 正常不该触发; 不是稳定性旋钮
     ladrc_wo: float = 15.0          # ESO 带宽 (rad/s)
     ladrc_b0: float = 1.0
     accel_clip: float = 18.0
@@ -50,7 +61,19 @@ class ShipArmController:
         self.nn = nn_comp
         if self.nn is None and self.cfg.use_nn:
             if os.path.exists(self.cfg.nn_onnx):
-                self.nn = ResidualCompensator(onnx_path=self.cfg.nn_onnx, tau_max=robot.tau_max)
+                g = ROBOT_GATE.get(self.cfg.robot_kind, RobotGate())
+                pick = lambda cfg_v, gate_v: gate_v if cfg_v is None else cfg_v  # noqa: E731
+                self.nn = ResidualCompensator(
+                    onnx_path=self.cfg.nn_onnx,
+                    tau_max=robot.tau_max,
+                    residual_frac=self.cfg.nn_residual_frac,
+                    trust_in=pick(self.cfg.nn_trust_in, g.trust_in),
+                    trust_out=pick(self.cfg.nn_trust_out, g.trust_out),
+                    qdd_clip=self.cfg.nn_qdd_clip,
+                    sev_in=pick(self.cfg.nn_sev_in, g.sev_in),
+                    sev_out=pick(self.cfg.nn_sev_out, g.sev_out),
+                    sev_tau=self.cfg.nn_sev_tau,
+                    dt=self.dt)
             else:
                 print(f"  [warn] NN onnx 不存在: {self.cfg.nn_onnx}; 仅用 TSID。")
 

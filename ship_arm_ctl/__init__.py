@@ -16,10 +16,12 @@ from .model_nn import ResidualNet
 from .nn_comp import ResidualCompensator, build_features, FEATURE_SCALES
 from .ladrc import LadrcCompensator
 from .controller import ShipArmController, ControllerConfig
-from .config import DEFAULT_ROBOT, DEFAULT_GAINS, DEFAULT_TSID_OPTS
+from .config import DEFAULT_ROBOT, DEFAULT_GAINS, DEFAULT_TSID_OPTS, build_robot, ROBOT_KINDS
+from ship_arm.robot.nero import make_nero, NERO_HOME, NERO_DQ_MAX, NERO_TAU_MAX
 
 __all__ = [
     "ResidualNet", "ResidualCompensator", "build_features", "FEATURE_SCALES",
     "LadrcCompensator", "ShipArmController", "ControllerConfig",
-    "DEFAULT_ROBOT", "DEFAULT_GAINS", "DEFAULT_TSID_OPTS",
+    "DEFAULT_ROBOT", "DEFAULT_GAINS", "DEFAULT_TSID_OPTS", "build_robot",
+    "ROBOT_KINDS", "make_nero", "NERO_HOME", "NERO_DQ_MAX", "NERO_TAU_MAX",
 ]

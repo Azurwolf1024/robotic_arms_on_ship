@@ -38,9 +38,23 @@ from ship_arm.core.lie import exp_so3, pose_error
 from ship_arm.estimation.eskf import ESKF, ESKFConfig
 from ship_arm.platform.ship import ShipMotion
 from ship_arm.robot.model import Robot
-from ship_arm.robot.panda import PANDA_HOME, make_panda
+from ship_arm.robot.panda import PANDA_HOME, make_panda, perturb_spec
+from ship_arm.robot.nero import make_nero, NERO_HOME
+from ship_arm_ctl.config import build_gains, build_robot
 from ship_arm_ctl.controller import ControllerConfig, ShipArmController
 from ship_arm_ctl.hardware import FrankaInterface, SimBridge
+
+
+def _home_for(kind: str) -> np.ndarray:
+    return NERO_HOME.copy() if kind == "nero" else PANDA_HOME.copy()
+
+
+def _make_robot(kind: str, tool_mass=None, payload_mass=0.0, model_error=0.0, seed=7):
+    robot = build_robot(kind, tool_mass=tool_mass, payload_mass=payload_mass)
+    if model_error > 0.0:
+        robot = Robot(perturb_spec(robot.spec, rel_mass=model_error,
+                                   rel_inertia=1.6 * model_error, seed=seed))
+    return robot
 
 
 def _arm_info(robot: Robot, q, dq):
@@ -67,17 +81,14 @@ def make_reference(kind: str, p0, R0, t, radius=0.075, period=8.0):
 
 
 def run_sim(args):
-    from ship_arm.robot.panda import perturb_spec
-    robot_c = Robot(make_panda(tool_mass=0.73))
-    if args.model_error > 0:
-        robot_t = Robot(perturb_spec(make_panda(tool_mass=0.73), rel_mass=args.model_error,
-                                     rel_inertia=1.6 * args.model_error, seed=7))
-    else:
-        robot_t = Robot(make_panda(tool_mass=0.73))
+    kind = getattr(args, "robot", "panda")
+    robot_c = _make_robot(kind, tool_mass=None, payload_mass=0.0)
+    robot_t = _make_robot(kind, tool_mass=None, payload_mass=0.0,
+                          model_error=args.model_error, seed=7)
     ship = ShipMotion(); ship.scale = args.ship_scale
     hw = SimBridge(robot_c, robot_t, ship, dt=args.dt, model_error=args.model_error,
                    friction=args.friction, coulomb=args.coulomb, seed=args.seed)
-    hw.q = PANDA_HOME.copy()
+    hw.q = _home_for(kind).copy()
 
     eskf = ESKF(ESKFConfig())
     st0 = ship.world_state(0.0)
@@ -85,8 +96,10 @@ def run_sim(args):
     eskf.reset(st0["R_WB"], st0["p_B"], p_ee0, R_ee0)
 
     cfg = ControllerConfig(use_nn=not args.no_nn, use_ladrc=args.ladrc,
-                           nn_onnx=args.nn_onnx)
-    ctrl = ShipArmController(robot_c, args.dt, cfg=cfg)
+                           nn_onnx=args.nn_onnx, robot_kind=kind)
+    # 增益必须按机械臂构造: 零空间目标位形 q_ns 要用该臂自己的 home
+    ctrl = ShipArmController(robot_c, args.dt, cfg=cfg,
+                             gains=build_gains(kind, robot_c))
 
     n = int(round(args.duration / args.dt))
     pe = np.zeros(n); t0 = time.perf_counter()
@@ -123,6 +136,7 @@ def run_sim(args):
 def main():
     ap = argparse.ArgumentParser(description="Ship-arm deployable control loop")
     ap.add_argument("--mode", choices=["sim", "real"], default="sim")
+    ap.add_argument("--robot", choices=["panda", "nero"], default="panda")
     ap.add_argument("--duration", type=float, default=15.0)
     ap.add_argument("--dt", type=float, default=1e-3)
     ap.add_argument("--ship-scale", type=float, default=1.0)
@@ -133,8 +147,14 @@ def main():
     ap.add_argument("--seed", type=int, default=1)
     ap.add_argument("--no-nn", action="store_true", help="关闭神经网络残差补偿")
     ap.add_argument("--ladrc", action="store_true", help="开启 LADRC 在线扰动补偿")
-    ap.add_argument("--nn-onnx", default=os.path.join(ROOT, "models", "residual_net.onnx"))
+    ap.add_argument("--nn-onnx", default=None, help="自定义 NN 残差 ONNX 路径(默认按 --robot 选)")
     args = ap.parse_args()
+
+    # 默认 NN 模型按机械臂分文件 (panda -> residual_net.onnx, nero -> residual_net_nero.onnx)
+    if args.nn_onnx is None:
+        args.nn_onnx = os.path.join(ROOT, "models",
+                                    "residual_net_nero.onnx" if args.robot == "nero"
+                                    else "residual_net.onnx")
 
     if args.mode == "sim":
         run_sim(args)
